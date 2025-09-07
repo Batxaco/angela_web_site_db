@@ -1,0 +1,9 @@
+CourseLevel,CourseGroup,TeacherID,CourseName,CourseCode,Description,Credits,Semester,AcademicYear,MaxStudents,Status
+Beginner,CS,1,Introduction to Programming,CS101,Basic programming concepts using Python,3,Fall,2023,30,Active
+Intermediate,CS,1,Data Structures,CS201,Arrays lists trees and graphs,3,Spring,2024,25,Active
+Beginner,MATH,2,College Algebra,MATH101,Fundamental algebraic concepts,3,Fall,2023,35,Active
+Intermediate,MATH,2,Calculus I,MATH201,Differential calculus,4,Spring,2024,30,Active
+Beginner,PHYS,3,General Physics I,PHYS101,Mechanics and thermodynamics,4,Fall,2023,25,Active
+Intermediate,PHYS,3,General Physics II,PHYS201,Electricity and magnetism,4,Spring,2024,25,Active
+Beginner,CHEM,4,General Chemistry I,CHEM101,Atomic structure and bonding,4,Fall,2023,30,Active
+Advanced,CS,5,Database Systems,CS301,Database design and SQL,3,Fall,2023,20,Active

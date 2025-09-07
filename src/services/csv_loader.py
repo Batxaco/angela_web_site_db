@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime
 import re
 
-from db_connection import DatabaseService
+from services.db_connection import DatabaseService
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +222,61 @@ class CSVLoader:
                 """,
                 'check_duplicates': False,
                 'custom_validation': self._validate_polymorphic_score
-            }
+            },
+
+            'Teachers': {
+                'required_columns': [
+                    'FirstName', 'LastName', 'Email', 'PhoneNumber', 'Department', 'HireDate', 'Status'
+                ],
+                'optional_columns': [],
+                'column_validators': {
+                    'Email': self._validate_email,
+                    'HireDate': self._validate_date,
+                    'Status': lambda x: x in ['Active', 'Inactive', 'On Leave'],
+                    'PhoneNumber': self._validate_phone
+                },
+                'column_transformers': {
+                    'FirstName': str.strip,
+                    'LastName': str.strip,
+                    'Email': str.lower,
+                    'Department': str.strip,
+                    'Status': str.strip
+                },
+                'insert_query': """
+                INSERT INTO Teachers (
+                    FirstName, LastName, Email, PhoneNumber, Department, 
+                    HireDate, Status
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+                'check_duplicates': True,
+                'duplicate_check_columns': ['Email'],
+                'duplicate_query': "SELECT COUNT(*) FROM Teachers WHERE Email = %s"
+            },
+
+            'Enrollments': {
+                'required_columns': [
+                    'StudentID', 'CourseID', 'EnrollmentDate', 'Status'
+                ],
+                'optional_columns': ['Grade'],
+                'column_validators': {
+                    'StudentID': self._validate_integer,
+                    'CourseID': self._validate_integer,
+                    'EnrollmentDate': self._validate_date,
+                    'Status': lambda x: x in ['Active', 'Dropped', 'Completed', 'Withdrawn'],
+                    'Grade': self._validate_optional_grade
+                },
+                'column_transformers': {
+                    'Status': str.strip
+                },
+                'insert_query': """
+                INSERT INTO Enrollments (
+                    StudentID, CourseID, EnrollmentDate, Status, Grade
+                ) VALUES (%s, %s, %s, %s, %s)
+            """,
+                'check_duplicates': True,
+                'duplicate_check_columns': ['StudentID', 'CourseID'],
+                'duplicate_query': "SELECT COUNT(*) FROM Enrollments WHERE StudentID = %s AND CourseID = %s"
+            },
         }
 
     def load_csv(self, csv_file: str, table_name: str,
@@ -451,6 +505,22 @@ class CSVLoader:
                     transformed_row.get('Notes'), transformed_row.get('Feedback'),
                     transformed_row.get('RecordedBy')
                 )
+            elif table_name == 'Teachers':
+                values = (
+                    transformed_row['FirstName'], transformed_row['LastName'],
+                    transformed_row['Email'], transformed_row['PhoneNumber'],
+                    transformed_row['Department'], transformed_row['HireDate'],
+                    transformed_row['Status']
+                )
+            elif table_name == 'Enrollments':
+                values = (
+                    transformed_row['StudentID'],
+                    transformed_row['CourseID'],
+                    transformed_row['EnrollmentDate'],
+                    transformed_row['Status'],
+                    transformed_row.get('Grade')
+                )
+
             else:
                 raise ValueError(f"Insert logic not implemented for table: {table_name}")
 
@@ -512,9 +582,18 @@ class CSVLoader:
 
     def _validate_phone(self, phone: str) -> bool:
         """Validate phone number format."""
-        # Basic phone validation - adjust pattern as needed
-        pattern = r'^\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$'
-        return re.match(pattern, phone) is not None
+        # More flexible phone validation patterns
+        patterns = [
+            r'^\+?1?[-.\s]?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$',  # Original pattern
+            r'^\+1-[0-9]{3}-[0-9]{4}$',  # +1-555-0101 format
+            r'^[0-9]{3}-[0-9]{4}$',  # 555-0101 format
+            r'^\([0-9]{3}\) [0-9]{3}-[0-9]{4}$',  # (555) 123-4567 format
+        ]
+
+        for pattern in patterns:
+            if re.match(pattern, phone.strip()):
+                return True
+        return False
 
     def _validate_integer(self, value: str) -> bool:
         """Validate integer value."""
@@ -561,6 +640,15 @@ class CSVLoader:
             return False
 
         return True
+
+    def _validate_optional_grade(self, grade: str) -> bool:
+        """Validate optional grade value."""
+        if grade is None or grade == '' or grade.strip() == '':
+            return True
+
+        # Common grade formats: A, B+, C-, etc.
+        grade_pattern = r'^[A-F][+-]?$'
+        return re.match(grade_pattern, grade.strip()) is not None
 
     def _reset_stats(self) -> None:
         """Reset validation statistics."""

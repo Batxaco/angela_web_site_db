@@ -12,8 +12,8 @@ from typing import Optional, Dict, Any, List, Union, Tuple
 from dataclasses import dataclass
 import threading
 
-from src.utils.credentials import DatabaseCredentials, CredentialsManager
-from src.config.config import DatabaseConfig
+from utils.credentials import DatabaseCredentials, CredentialsManager
+from config.config import DatabaseConfig
 
 logger = logging.getLogger(__name__)
 

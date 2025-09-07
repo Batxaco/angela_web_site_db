@@ -1,0 +1,9 @@
+LevelID,GroupName,GroupCode,Description,Weight,MaxScore,OrderIndex,IsActive
+1,Weekly Assignments,WA,Regular programming assignments,0.60,100,1,1
+1,Projects,PROJ,Major programming projects,0.40,100,2,1
+4,Lab Assignments,LAB,Data structure implementation labs,0.70,100,1,1
+4,Theory Assignments,THEORY,Theoretical problem sets,0.30,100,2,1
+7,Problem Sets,PS,Algebra homework problems,0.80,100,1,1
+7,Practice Tests,PT,Preparation for exams,0.20,100,2,1
+10,Calculus Problems,CP,Differential calculus exercises,0.75,100,1,1
+10,Application Problems,APP,Real-world calculus applications,0.25,100,2,1

@@ -11,9 +11,9 @@ from pathlib import Path
 import json
 import time
 
-from db_connection import DatabaseService
-from csv_loader import CSVLoader, create_csv_loader
-from table_operations import TableOperationsService
+from services.db_connection import DatabaseService
+from services.csv_loader import CSVLoader, create_csv_loader
+from services.table_operations import TableOperationsService
 
 logger = logging.getLogger(__name__)
 

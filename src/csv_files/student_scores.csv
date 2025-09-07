@@ -1,0 +1,16 @@
+StudentID,LevelID,GroupID,ComponentID,Score,MaxPossibleScore,DateCompleted,Status,Notes,Feedback,RecordedBy
+1,,1,,85.5,100.0,2023-09-15,Completed,Good work on assignments,Well done overall,1
+2,,1,,92.0,100.0,2023-09-15,Completed,Excellent effort,Outstanding performance,1
+3,,1,,78.5,100.0,2023-09-15,Completed,Needs improvement,Keep practicing,1
+1,,,1,88.0,100.0,2023-09-20,Completed,Great assignment,Very thorough work,1
+2,,,1,95.0,100.0,2023-09-20,Completed,Perfect submission,Excellent analysis,1
+3,,,1,82.0,100.0,2023-09-20,Completed,Good effort,Nice improvement,1
+1,,,2,90.0,100.0,2023-09-25,Completed,Well structured,Clear understanding shown,1
+2,,,2,87.0,100.0,2023-09-25,Completed,Good work,Solid performance,1
+3,,,2,85.0,100.0,2023-09-25,Completed,Much better,Good progress,1
+4,,1,,91.0,100.0,2023-09-15,Completed,Strong performance,Consistent quality,1
+5,,1,,76.0,100.0,2023-09-15,Completed,Adequate work,Room for improvement,1
+4,,,1,89.0,100.0,2023-09-20,Completed,Good analysis,Well researched,1
+5,,,1,80.0,100.0,2023-09-20,Completed,Basic completion,Meet minimum requirements,1
+6,,1,,93.5,100.0,2023-09-15,Completed,Exceptional work,Top quality submission,1
+6,,,1,96.0,100.0,2023-09-20,Completed,Perfect work,Exemplary effort,1

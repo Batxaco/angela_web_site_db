@@ -1,0 +1,15 @@
+CourseID,LevelName,LevelCode,Description,Weight,MaxScore,OrderIndex,IsActive
+1,Assignments,ASSIGN,Programming assignments and projects,0.40,100,1,1
+1,Midterm Exam,MIDTERM,Mid-semester examination,0.25,100,2,1
+1,Final Exam,FINAL,Comprehensive final examination,0.35,100,3,1
+2,Assignments,ASSIGN,Data structure implementation projects,0.50,100,1,1
+2,Midterm Exam,MIDTERM,Mid-semester examination,0.20,100,2,1
+2,Final Exam,FINAL,Comprehensive final examination,0.30,100,3,1
+3,Homework,HW,Weekly problem sets,0.30,100,1,1
+3,Quizzes,QUIZ,Regular class quizzes,0.20,100,2,1
+3,Midterm Exam,MIDTERM,Mid-semester examination,0.25,100,3,1
+3,Final Exam,FINAL,Comprehensive final examination,0.25,100,4,1
+4,Homework,HW,Calculus problem sets,0.25,100,1,1
+4,Quizzes,QUIZ,Weekly quizzes,0.15,100,2,1
+4,Midterm Exams,MIDTERM,Two midterm examinations,0.30,100,3,1
+4,Final Exam,FINAL,Comprehensive final examination,0.30,100,4,1

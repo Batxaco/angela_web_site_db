@@ -16,6 +16,7 @@ TABLE_CREATION_ORDER = [
     'Students',
     'Teachers',
     'Courses',
+    'Enrollments',
     'Levels',
     'EvaluationGroups',
     'EvaluationComponents',
@@ -98,6 +99,31 @@ CREATE_TABLE_QUERIES: Dict[str, str] = {
             INDEX idx_status (Status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         COMMENT='Course catalog with level and group information'
+    """,
+
+    'Enrollments': """
+        CREATE TABLE IF NOT EXISTS Enrollments (
+            EnrollmentID INT PRIMARY KEY AUTO_INCREMENT,
+            StudentID INT NOT NULL,
+            CourseID INT NOT NULL,
+            EnrollmentDate DATE NOT NULL,
+            Status ENUM('Active', 'Dropped', 'Completed', 'Withdrawn') DEFAULT 'Active',
+            Grade CHAR(2),
+            CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+            FOREIGN KEY (StudentID) REFERENCES Students(StudentID)
+                ON DELETE CASCADE ON UPDATE CASCADE,
+            FOREIGN KEY (CourseID) REFERENCES Courses(CourseID)
+                ON DELETE CASCADE ON UPDATE CASCADE,
+    
+            UNIQUE KEY unique_enrollment (StudentID, CourseID),
+            INDEX idx_student (StudentID),
+            INDEX idx_course (CourseID),
+            INDEX idx_enrollment_date (EnrollmentDate),
+            INDEX idx_status (Status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        COMMENT='Student course enrollment records'
     """,
 
     'Levels': """
@@ -334,9 +360,10 @@ DROP_TABLE_QUERIES: Dict[str, str] = {
     'EvaluationComponents': "DROP TABLE IF EXISTS EvaluationComponents",
     'EvaluationGroups': "DROP TABLE IF EXISTS EvaluationGroups",
     'Levels': "DROP TABLE IF EXISTS Levels",
+    'Enrollments': "DROP TABLE IF EXISTS Enrollments",
     'Courses': "DROP TABLE IF EXISTS Courses",
     'Teachers': "DROP TABLE IF EXISTS Teachers",
-    'Students': "DROP TABLE IF EXISTS Students"
+    'Students': "DROP TABLE IF EXISTS Students",
 }
 
 # Table drop order (reverse of creation order to respect foreign keys)
@@ -609,6 +636,8 @@ CREATE_VIEWS: Dict[str, str] = {
 # Stored procedures for common operations (MySQL 5.7 compatible)
 CREATE_PROCEDURES: Dict[str, str] = {
     'CalculateStudentGPA': """
+        DROP PROCEDURE IF EXISTS CalculateStudentGPA;
+
         CREATE PROCEDURE CalculateStudentGPA(
             IN student_id INT,
             IN academic_year VARCHAR(20),
@@ -617,7 +646,7 @@ CREATE_PROCEDURES: Dict[str, str] = {
         BEGIN
             DECLARE total_points DECIMAL(10,2) DEFAULT 0;
             DECLARE total_credits INT DEFAULT 0;
-            
+
             SELECT 
                 IFNULL(SUM(g.GradePoints * c.Credits), 0),
                 IFNULL(SUM(c.Credits), 0)
@@ -627,7 +656,7 @@ CREATE_PROCEDURES: Dict[str, str] = {
             WHERE g.StudentID = student_id 
             AND (academic_year IS NULL OR g.AcademicYear = academic_year)
             AND g.Status = 'Final';
-            
+
             IF total_credits > 0 THEN
                 SET gpa = total_points / total_credits;
             ELSE
@@ -637,6 +666,8 @@ CREATE_PROCEDURES: Dict[str, str] = {
     """,
 
     'GetStudentTranscript': """
+        DROP PROCEDURE IF EXISTS GetStudentTranscript;
+
         CREATE PROCEDURE GetStudentTranscript(
             IN student_id INT
         )
@@ -663,6 +694,8 @@ CREATE_PROCEDURES: Dict[str, str] = {
     """,
 
     'CalculateWeightedScore': """
+        DROP PROCEDURE IF EXISTS CalculateWeightedScore;
+
         CREATE PROCEDURE CalculateWeightedScore(
             IN student_id INT,
             IN course_id INT,
@@ -672,9 +705,8 @@ CREATE_PROCEDURES: Dict[str, str] = {
         BEGIN
             DECLARE total_weighted DECIMAL(10,2) DEFAULT 0;
             DECLARE total_weight DECIMAL(10,2) DEFAULT 0;
-            
+
             IF target_level = 'Course' THEN
-                -- Calculate course-level weighted score from levels
                 SELECT 
                     IFNULL(SUM((ss.Score / ss.MaxPossibleScore) * l.Weight), 0),
                     IFNULL(SUM(l.Weight), 0)
@@ -684,9 +716,8 @@ CREATE_PROCEDURES: Dict[str, str] = {
                 WHERE ss.StudentID = student_id 
                 AND l.CourseID = course_id
                 AND ss.Status = 'Completed';
-                
+
             ELSEIF target_level = 'Level' THEN
-                -- Calculate level weighted score from groups
                 SELECT 
                     IFNULL(SUM((ss.Score / ss.MaxPossibleScore) * eg.Weight), 0),
                     IFNULL(SUM(eg.Weight), 0)
@@ -697,9 +728,8 @@ CREATE_PROCEDURES: Dict[str, str] = {
                 WHERE ss.StudentID = student_id 
                 AND l.CourseID = course_id
                 AND ss.Status = 'Completed';
-                
+
             ELSEIF target_level = 'Group' THEN
-                -- Calculate group weighted score from components
                 SELECT 
                     IFNULL(SUM((ss.Score / ss.MaxPossibleScore) * ec.Weight), 0),
                     IFNULL(SUM(ec.Weight), 0)
@@ -709,7 +739,7 @@ CREATE_PROCEDURES: Dict[str, str] = {
                 WHERE ss.StudentID = student_id 
                 AND ss.Status = 'Completed';
             END IF;
-            
+
             IF total_weight > 0 THEN
                 SET weighted_score = (total_weighted / total_weight) * 100;
             ELSE
