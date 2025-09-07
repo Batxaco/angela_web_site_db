@@ -1,521 +1,984 @@
 """
-main.py
-=======
-Main entry point for the Student Database Management System.
-Sets up configuration from credentials.json, tests connection, and lists tables.
+Main entry point for MySQL Student Database Management System.
 
-Author: Assistant
-Date: 2024
+This module orchestrates the configuration, database operations, and services
+to provide a complete database management solution with comprehensive
+error handling and logging.
 """
 
-import os
 import sys
-import json
+import argparse
 import logging
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Optional, List, Dict, Any
+import time
 
-# Add project root to path if needed
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Import configuration and utilities
+from config.config import load_config, setup_logging, DatabaseConfig
+from utils.credentials import create_sample_credentials_file, CredentialsManager
 
-# Import project modules
-try:
-    from connection import DBConnection
-    from student_db_manager import StudentDatabaseManager, QueryExecutor
-    from entities.queries import QueryLibrary
-
-    print("✓ All modules imported successfully")
-except ImportError as e:
-    print(f"✗ Error importing modules: {e}")
-    print("Please ensure all module files are in the correct location:")
-    print("  - connection.py")
-    print("  - student_db_manager.py")
-    print("  - entities/queries.py")
-    sys.exit(1)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('database_setup.log'),
-        logging.StreamHandler()
-    ]
+# Import services
+from services.db_connection import (
+    create_database_service, DatabaseService,
+    DatabaseConnectionError, check_driver_availability
 )
+from services.table_operations import TableOperationsService
+
+# Import entity operations
+from entity.creation_queries import (
+    get_creation_queries_by_order, get_drop_queries_by_order,
+    CREATE_VIEWS, CREATE_PROCEDURES
+)
+from entity.insert_queries import get_insert_query, get_insert_order
+from entity.update_queries import get_update_query, get_maintenance_queries
+
 logger = logging.getLogger(__name__)
 
 
-class DatabaseSetup:
-    """Handles database setup and configuration from credentials file."""
+class DatabaseManager:
+    """
+    Main database manager that orchestrates all database operations.
+    """
 
-    def __init__(self, credentials_file: str = 'credentials.json'):
+    def __init__(self, config: DatabaseConfig, credentials_file: str = 'credentials.json'):
         """
-        Initialize database setup.
+        Initialize database manager.
 
         Args:
-            credentials_file: Path to credentials JSON file
+            config: Database configuration
+            credentials_file: Path to credentials file
         """
+        self.config = config
         self.credentials_file = credentials_file
-        self.config = None
-        self.db_connection = None
-        self.manager = None
-
-    def load_credentials(self) -> Dict[str, Any]:
-        """
-        Load credentials from JSON file.
-
-        Returns:
-            Dictionary with database credentials
-
-        Raises:
-            FileNotFoundError: If credentials file doesn't exist
-            json.JSONDecodeError: If credentials file is invalid
-        """
-        credentials_path = Path(self.credentials_file)
-
-        if not credentials_path.exists():
-            logger.error(f"Credentials file not found: {self.credentials_file}")
-            raise FileNotFoundError(
-                f"Credentials file '{self.credentials_file}' not found. "
-                f"Please create it with your database configuration."
-            )
-
-        try:
-            with open(credentials_path, 'r') as f:
-                credentials = json.load(f)
-                logger.info(f"Loaded credentials from {self.credentials_file}")
-                return credentials
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in credentials file: {e}")
-            raise
-
-    def setup_environment_from_credentials(self, credentials: Dict[str, Any]) -> None:
-        """
-        Set up environment variables from credentials.
-
-        Args:
-            credentials: Dictionary with database configuration
-        """
-        db_config = credentials.get('database', {})
-
-        # Map credentials to environment variables
-        env_mapping = {
-            'type': 'DB_TYPE',
-            'db_type': 'DB_TYPE',
-            'host': 'DB_HOST',
-            'port': 'DB_PORT',
-            'database': 'DB_DATABASE',
-            'db_path': 'DB_PATH',
-            'username': 'DB_USERNAME',
-            'password': 'DB_PASSWORD',
-            'connection_timeout': 'DB_TIMEOUT',
-            'pool_size': 'DB_POOL_SIZE',
-            'echo': 'DB_ECHO'
+        self.db_service: Optional[DatabaseService] = None
+        self.table_service: Optional[TableOperationsService] = None
+        self._operation_stats = {
+            'tables_created': 0,
+            'tables_dropped': 0,
+            'records_inserted': 0,
+            'records_updated': 0,
+            'errors': 0
         }
 
-        for key, env_var in env_mapping.items():
-            if key in db_config:
-                value = str(db_config[key])
-                os.environ[env_var] = value
-                if key not in ['password']:  # Don't log passwords
-                    logger.debug(f"Set {env_var} = {value}")
-
-        # Set application environment if provided
-        app_config = credentials.get('app', {})
-        if 'environment' in app_config:
-            os.environ['APP_ENV'] = app_config['environment']
-            logger.info(f"Set APP_ENV = {app_config['environment']}")
-
-    def get_connection_string(self, credentials: Dict[str, Any]) -> str:
+    def initialize(self) -> bool:
         """
-        Get the database connection string from credentials.
-
-        Args:
-            credentials: Dictionary with database configuration
+        Initialize database services and connections.
 
         Returns:
-            Connection string for the database
-        """
-        db_config = credentials.get('database', {})
-        db_type = db_config.get('type', 'sqlite').lower()
-
-        if db_type == 'sqlite':
-            return db_config.get('db_path', db_config.get('database', 'student.db'))
-        elif db_type == 'mysql':
-            host = db_config.get('host', 'localhost')
-            port = db_config.get('port', 3306)
-            database = db_config.get('database', 'student_db')
-            username = db_config.get('username', 'root')
-            password = db_config.get('password', '')
-            return f"mysql://{username}:{password}@{host}:{port}/{database}"
-        elif db_type == 'postgresql':
-            host = db_config.get('host', 'localhost')
-            port = db_config.get('port', 5432)
-            database = db_config.get('database', 'student_db')
-            username = db_config.get('username', 'postgres')
-            password = db_config.get('password', '')
-            return f"postgresql://{username}:{password}@{host}:{port}/{database}"
-        else:
-            return db_config.get('db_path', ':memory:')
-
-    def test_connection(self) -> bool:
-        """
-        Test the database connection.
-
-        Returns:
-            True if connection successful, False otherwise
+            True if initialization successful
         """
         try:
-            # Load credentials
-            credentials = self.load_credentials()
-            self.config = credentials
+            logger.info("Initializing database manager...")
 
-            # Setup environment
-            self.setup_environment_from_credentials(credentials)
+            # Check driver availability
+            drivers = check_driver_availability()
+            if not drivers['any_available']:
+                logger.error("No MySQL drivers available. Please install mysql-connector-python or PyMySQL")
+                return False
 
-            # Get connection string
-            conn_string = self.get_connection_string(credentials)
-            logger.info(f"Connecting to database: {conn_string}")
+            logger.info(f"Available drivers: {[k for k, v in drivers.items() if v and k != 'any_available']}")
 
-            # Create connection
-            self.db_connection = DBConnection(db_path=conn_string)
+            # Create database service
+            self.db_service = create_database_service(self.credentials_file, self.config)
 
-            # Test connection
-            with self.db_connection.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                result = cursor.fetchone()
+            # Create table operations service
+            self.table_service = TableOperationsService(self.db_service)
 
-                if result:
-                    logger.info("✓ Database connection successful")
-                    return True
-                else:
-                    logger.error("✗ Database connection test failed")
-                    return False
-
-        except Exception as e:
-            logger.error(f"✗ Connection failed: {e}")
-            return False
-
-    def list_tables(self) -> Dict[str, int]:
-        """
-        List all tables in the database with their record counts.
-
-        Returns:
-            Dictionary with table names and record counts
-        """
-        tables = {}
-
-        try:
-            if not self.db_connection:
-                self.test_connection()
-
-            with self.db_connection.get_connection() as conn:
-                cursor = conn.cursor()
-
-                # Get all tables
-                cursor.execute("""
-                    SELECT name FROM sqlite_master 
-                    WHERE type='table' AND name NOT LIKE 'sqlite_%'
-                    ORDER BY name
-                """)
-
-                table_names = cursor.fetchall()
-
-                for (table_name,) in table_names:
-                    # Get record count
-                    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-                    count = cursor.fetchone()[0]
-                    tables[table_name] = count
-
-                logger.info(f"Found {len(tables)} tables in database")
-
-        except Exception as e:
-            logger.error(f"Error listing tables: {e}")
-
-        return tables
-
-    def check_schema_exists(self) -> bool:
-        """
-        Check if the database schema exists.
-
-        Returns:
-            True if schema exists, False otherwise
-        """
-        expected_tables = [
-            'Students', 'Teachers', 'Courses', 'EvaluationComponents',
-            'Evaluations', 'Grades', 'Tutorials', 'Bans'
-        ]
-
-        tables = self.list_tables()
-        existing_tables = set(tables.keys())
-        expected_set = set(expected_tables)
-
-        missing_tables = expected_set - existing_tables
-
-        if not missing_tables:
-            logger.info("✓ All expected tables exist")
+            logger.info("Database manager initialized successfully")
             return True
-        else:
-            logger.warning(f"Missing tables: {missing_tables}")
+
+        except DatabaseConnectionError as e:
+            logger.error(f"Database connection failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Initialization failed: {e}")
             return False
 
-    def initialize_database(self, force: bool = False) -> bool:
+    def create_schema(self, selected_tables: Optional[List[str]] = None) -> bool:
         """
-        Initialize the database schema if needed.
+        Create database schema with specified tables.
 
         Args:
-            force: Force recreation of schema even if it exists
+            selected_tables: Optional list of specific tables to create
 
         Returns:
-            True if successful
+            True if schema creation successful
         """
         try:
-            if not self.db_connection:
-                self.test_connection()
+            logger.info("Creating database schema...")
 
-            # Create manager
-            conn_string = self.get_connection_string(self.config)
-            self.manager = StudentDatabaseManager(db_path=conn_string)
-
-            if force or not self.check_schema_exists():
-                logger.info("Initializing database schema...")
-
-                # Create schema
-                if self.manager.create_schema():
-                    logger.info("✓ Database schema created successfully")
-                    return True
-                else:
-                    logger.error("✗ Failed to create database schema")
-                    return False
+            # Get tables to create
+            if selected_tables:
+                tables_to_create = selected_tables
             else:
-                logger.info("Database schema already exists")
-                return True
+                tables_to_create = self.config.get_table_list()
+
+            # Drop existing tables if configured
+            if self.config.drop_existing:
+                logger.info("Dropping existing tables...")
+                self._drop_tables(tables_to_create)
+
+            # Get creation queries in dependency order
+            creation_queries = get_creation_queries_by_order(tables_to_create)
+
+            logger.info(f"Creating {len(creation_queries)} tables...")
+
+            for table_name, query in creation_queries:
+                try:
+                    logger.debug(f"Creating table: {table_name}")
+                    self.db_service.execute_query(query, fetch=False)
+                    self._operation_stats['tables_created'] += 1
+                    logger.info(f"✅ Created table: {table_name}")
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to create table {table_name}: {e}")
+                    self._operation_stats['errors'] += 1
+
+                    if not self.config.update_existing:
+                        raise
+
+            # Create views if configured
+            if hasattr(self.config, 'create_views') and self.config.create_views:
+                self._create_views()
+
+            # Create stored procedures if configured
+            if hasattr(self.config, 'create_procedures') and self.config.create_procedures:
+                self._create_procedures()
+
+            logger.info(f"Schema creation completed. Created {self._operation_stats['tables_created']} tables")
+            return True
 
         except Exception as e:
-            logger.error(f"Error initializing database: {e}")
+            logger.error(f"Schema creation failed: {e}")
             return False
 
-    def display_summary(self) -> None:
-        """Display a summary of the database setup."""
-        print("\n" + "=" * 70)
-        print("DATABASE SETUP SUMMARY")
-        print("=" * 70)
+    def _drop_tables(self, table_names: List[str]) -> None:
+        """Drop specified tables in reverse dependency order."""
+        drop_queries = get_drop_queries_by_order(table_names)
 
-        # Configuration
-        if self.config:
-            db_config = self.config.get('database', {})
-            print("\n📋 Configuration:")
-            print(f"   Type: {db_config.get('type', 'sqlite')}")
+        for table_name, query in drop_queries:
+            try:
+                if self.table_service.check_table_exists(table_name):
+                    logger.debug(f"Dropping table: {table_name}")
+                    self.db_service.execute_query(query, fetch=False)
+                    self._operation_stats['tables_dropped'] += 1
+                    logger.info(f"🗑️ Dropped table: {table_name}")
+            except Exception as e:
+                logger.warning(f"Failed to drop table {table_name}: {e}")
 
-            if db_config.get('type') == 'sqlite':
-                print(f"   Path: {db_config.get('db_path', db_config.get('database'))}")
-            else:
-                print(f"   Host: {db_config.get('host', 'localhost')}")
-                print(f"   Port: {db_config.get('port', 'N/A')}")
-                print(f"   Database: {db_config.get('database', 'N/A')}")
-                print(f"   Username: {db_config.get('username', 'N/A')}")
+    def _create_triggers(self) -> None:
+        """Create database triggers for MySQL 5.7 compatibility."""
+        logger.info("Creating database triggers for MySQL 5.7 compatibility...")
 
-            print(f"   Timeout: {db_config.get('connection_timeout', 30)} seconds")
+        from entity.creation_queries import get_trigger_queries
 
-        # Connection status
-        print("\n🔌 Connection Status:")
-        if self.test_connection():
-            print("   ✓ Connected successfully")
-        else:
-            print("   ✗ Connection failed")
-            return
+        trigger_queries = get_trigger_queries()
 
-        # Tables
-        print("\n📊 Database Tables:")
-        tables = self.list_tables()
+        for trigger_name, query in trigger_queries:
+            try:
+                # Drop trigger if it exists first
+                drop_query = f"DROP TRIGGER IF EXISTS {trigger_name}"
+                self.db_service.execute_query(drop_query, fetch=False)
 
-        if tables:
-            total_records = 0
-            for table_name, count in sorted(tables.items()):
-                print(f"   {table_name:25} {count:6} records")
-                total_records += count
+                # Create the trigger
+                self.db_service.execute_query(query, fetch=False)
+                logger.info(f"✅ Created trigger: {trigger_name}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to create trigger {trigger_name}: {e}")
 
-            print(f"   {'─' * 33}")
-            print(f"   {'Total':25} {total_records:6} records")
-        else:
-            print("   No tables found")
+    def _create_views(self) -> None:
+        """Create database views."""
+        logger.info("Creating database views...")
 
-        # Schema check
-        print("\n✅ Schema Validation:")
-        if self.check_schema_exists():
-            print("   All required tables present")
-        else:
-            print("   Some tables missing - run with --init to create schema")
+        for view_name, query in CREATE_VIEWS.items():
+            try:
+                self.db_service.execute_query(query, fetch=False)
+                logger.info(f"✅ Created view: {view_name}")
+            except Exception as e:
+                logger.error(f"❌ Failed to create view {view_name}: {e}")
 
-        print("\n" + "=" * 70)
+    def _create_procedures(self) -> None:
+        """Create stored procedures."""
+        logger.info("Creating stored procedures...")
+
+        for proc_name, query in CREATE_PROCEDURES.items():
+            try:
+                self.db_service.execute_query(query, fetch=False)
+                logger.info(f"✅ Created procedure: {proc_name}")
+            except Exception as e:
+                logger.error(f"❌ Failed to create procedure {proc_name}: {e}")
+
+    def insert_sample_data(self) -> bool:
+        """
+        Insert sample data into database tables.
+
+        Returns:
+            True if data insertion successful
+        """
+        try:
+            logger.info("Inserting sample data...")
+
+            # Get insertion order
+            insert_order = get_insert_order()
+
+            # Filter based on existing tables and configuration
+            tables_to_populate = []
+            for table in insert_order:
+                if self.table_service.check_table_exists(table):
+                    if not self.config.selected_tables or table in self.config.selected_tables:
+                        tables_to_populate.append(table)
+
+            logger.info(f"Inserting data into {len(tables_to_populate)} tables...")
+
+            for table_name in tables_to_populate:
+                try:
+                    # Check if table already has data
+                    existing_count = self._get_table_row_count(table_name)
+
+                    if existing_count > 0 and not self.config.update_existing:
+                        logger.info(f"⚠️ Table {table_name} already has {existing_count} records, skipping")
+                        continue
+
+                    # Get and execute insert query
+                    insert_query = get_insert_query(table_name)
+
+                    logger.debug(f"Inserting data into: {table_name}")
+                    self.db_service.execute_query(insert_query, fetch=False)
+
+                    # Get new count
+                    new_count = self._get_table_row_count(table_name)
+                    records_added = new_count - existing_count
+
+                    self._operation_stats['records_inserted'] += records_added
+                    logger.info(f"✅ Inserted {records_added} records into {table_name}")
+
+                except Exception as e:
+                    logger.error(f"❌ Failed to insert data into {table_name}: {e}")
+                    self._operation_stats['errors'] += 1
+
+                    if not self.config.update_existing:
+                        raise
+
+            logger.info(f"Sample data insertion completed. Inserted {self._operation_stats['records_inserted']} records")
+            return True
+
+        except Exception as e:
+            logger.error(f"Sample data insertion failed: {e}")
+            return False
+
+    def _get_table_row_count(self, table_name: str) -> int:
+        """Get row count for a table."""
+        try:
+            result = self.db_service.execute_query(f"SELECT COUNT(*) FROM `{table_name}`")
+            return result[0][0] if result else 0
+        except Exception:
+            return 0
+
+    def run_maintenance_operations(self) -> bool:
+        """
+        Run database maintenance operations.
+
+        Returns:
+            True if maintenance operations successful
+        """
+        try:
+            logger.info("Running database maintenance operations...")
+
+            maintenance_queries = get_maintenance_queries()
+
+            for operation_name, query in maintenance_queries.items():
+                try:
+                    logger.debug(f"Running maintenance operation: {operation_name}")
+                    self.db_service.execute_query(query, fetch=False)
+                    logger.info(f"✅ Completed maintenance: {operation_name}")
+
+                except Exception as e:
+                    logger.error(f"❌ Maintenance operation failed {operation_name}: {e}")
+                    self._operation_stats['errors'] += 1
+
+            logger.info("Database maintenance completed")
+            return True
+
+        except Exception as e:
+            logger.error(f"Database maintenance failed: {e}")
+            return False
+
+    def generate_report(self) -> Dict[str, Any]:
+        """
+        Generate comprehensive database report.
+
+        Returns:
+            Dictionary with database report information
+        """
+        try:
+            logger.info("Generating database report...")
+
+            # Get database summary
+            summary = self.table_service.get_database_summary()
+
+            # Get schema integrity analysis
+            integrity = self.table_service.analyze_schema_integrity()
+
+            # Combine with operation stats
+            report = {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'database_summary': summary,
+                'schema_integrity': integrity,
+                'operation_statistics': self._operation_stats.copy(),
+                'configuration': {
+                    'create_schema': self.config.create_schema,
+                    'insert_sample_data': self.config.insert_sample_data,
+                    'update_existing': self.config.update_existing,
+                    'selected_tables': self.config.selected_tables
+                }
+            }
+
+            logger.info("Database report generated successfully")
+            return report
+
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
+            return {'error': str(e)}
+
+    def display_status(self) -> None:
+        """Display current database status."""
+        try:
+            print("\n" + "=" * 80)
+            print("MYSQL STUDENT DATABASE MANAGEMENT SYSTEM")
+            print("=" * 80)
+
+            # Connection info
+            if self.db_service:
+                conn_info = self.db_service.get_connection_info()
+                print(f"\n📊 Database Connection:")
+                print(f"   Driver: {conn_info.get('driver', 'Unknown')}")
+                print(f"   Host: {conn_info.get('host', 'Unknown')}")
+                print(f"   Database: {conn_info.get('database', 'Unknown')}")
+                print(f"   Server Version: {conn_info.get('server_version', 'Unknown')}")
+
+            # Table summary
+            if self.table_service:
+                summary = self.table_service.get_database_summary()
+                print(f"\n📋 Database Summary:")
+                print(f"   Tables: {summary.get('table_count', 0)}")
+                print(f"   Total Records: {summary.get('total_rows', 0):,}")
+                print(f"   Total Size: {summary.get('total_size_mb', 0):.2f} MB")
+                print(f"   Foreign Keys: {summary.get('foreign_key_count', 0)}")
+
+                # Table details
+                if summary.get('tables'):
+                    print(f"\n📊 Table Details:")
+                    print(f"   {'Table':<25} {'Records':<10} {'Size (MB)':<10} {'Engine':<8}")
+                    print(f"   {'-' * 60}")
+
+                    for table in summary['tables']:
+                        print(f"   {table['name']:<25} {table['rows']:<10,} "
+                              f"{table['size_mb']:<10.2f} {table['engine']:<8}")
+
+            # Operation statistics
+            print(f"\n🔧 Operation Statistics:")
+            print(f"   Tables Created: {self._operation_stats['tables_created']}")
+            print(f"   Tables Dropped: {self._operation_stats['tables_dropped']}")
+            print(f"   Records Inserted: {self._operation_stats['records_inserted']:,}")
+            print(f"   Records Updated: {self._operation_stats['records_updated']:,}")
+            print(f"   Errors: {self._operation_stats['errors']}")
+
+            print("\n" + "=" * 80)
+
+        except Exception as e:
+            logger.error(f"Error displaying status: {e}")
+            print(f"❌ Error displaying status: {e}")
+
+    def close(self) -> None:
+        """Close all database connections and cleanup."""
+        if self.db_service:
+            self.db_service.close()
+        logger.info("Database manager closed")
 
 
-def create_sample_credentials_file():
-    """Create a sample credentials.json file for reference."""
-
-    sample_credentials = {
-        "database": {
-            "type": "sqlite",
-            "db_path": "student_database.db",
-            "database": "student_database.db",
-            "connection_timeout": 30,
-            "pool_size": 5,
-            "echo": False
-        },
-        "app": {
-            "environment": "development",
-            "debug": False,
-            "log_level": "INFO"
-        }
-    }
-
-    # For MySQL example
-    mysql_example = {
-        "database": {
-            "type": "mysql",
-            "host": "localhost",
-            "port": 3306,
-            "database": "student_db",
-            "username": "your_username",
-            "password": "your_password",
-            "connection_timeout": 30,
-            "pool_size": 5,
-            "echo": False
-        },
-        "app": {
-            "environment": "production",
-            "debug": False,
-            "log_level": "INFO"
-        }
-    }
-
-    if not Path('credentials.example.json').exists():
-        with open('credentials.example.json', 'w') as f:
-            json.dump(sample_credentials, f, indent=2)
-        print("✓ Created credentials.example.json (SQLite example)")
-
-    if not Path('credentials.mysql.example.json').exists():
-        with open('credentials.mysql.example.json', 'w') as f:
-            json.dump(mysql_example, f, indent=2)
-        print("✓ Created credentials.mysql.example.json (MySQL example)")
-
-
-def main():
-    """Main entry point for the application."""
-    import argparse
-
-    # Parse command line arguments
+def create_argument_parser() -> argparse.ArgumentParser:
+    """Create and configure argument parser."""
     parser = argparse.ArgumentParser(
-        description='Student Database Management System Setup'
-    )
-    parser.add_argument(
-        '--credentials',
-        default='credentials.json',
-        help='Path to credentials JSON file (default: credentials.json)'
-    )
-    parser.add_argument(
-        '--init',
-        action='store_true',
-        help='Initialize database schema'
-    )
-    parser.add_argument(
-        '--force',
-        action='store_true',
-        help='Force recreation of schema (WARNING: destroys existing data)'
-    )
-    parser.add_argument(
-        '--sample-data',
-        action='store_true',
-        help='Insert sample data after initialization'
-    )
-    parser.add_argument(
-        '--create-examples',
-        action='store_true',
-        help='Create example credentials files'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
+        description='MySQL Student Database Management System',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --init                           # Create schema only
+  %(prog)s --init --sample-data            # Create schema and insert sample data
+  %(prog)s --tables Students Teachers      # Create only specific tables
+  %(prog)s --drop --init                   # Drop existing and recreate
+  %(prog)s --maintenance                   # Run maintenance operations
+  %(prog)s --report                        # Generate database report
+  %(prog)s --create-credentials            # Create sample credentials file
+        """
     )
 
+    # Operation flags
+    parser.add_argument('--init', action='store_true',
+                       help='Initialize database schema')
+    parser.add_argument('--sample-data', action='store_true',
+                       help='Insert sample data into tables')
+    parser.add_argument('--drop', action='store_true',
+                       help='Drop existing tables before creation')
+    parser.add_argument('--maintenance', action='store_true',
+                       help='Run database maintenance operations')
+    parser.add_argument('--report', action='store_true',
+                       help='Generate comprehensive database report')
+    parser.add_argument('--status', action='store_true',
+                       help='Display current database status')
+
+    # Configuration options
+    parser.add_argument('--config', type=str, metavar='FILE',
+                       help='Path to configuration file')
+    parser.add_argument('--credentials', type=str, default='credentials.json',
+                       metavar='FILE', help='Path to credentials file')
+    parser.add_argument('--tables', nargs='+', metavar='TABLE',
+                       help='Specific tables to operate on')
+    parser.add_argument('--exclude', nargs='+', metavar='TABLE',
+                       help='Tables to exclude from operations')
+
+    # Utility options
+    parser.add_argument('--create-credentials', action='store_true',
+                       help='Create sample credentials file')
+    parser.add_argument('--check-drivers', action='store_true',
+                       help='Check MySQL driver availability')
+    parser.add_argument('--test-connection', action='store_true',
+                       help='Test database connection only')
+
+    # Logging options
+    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                       default='INFO', help='Set logging level')
+    parser.add_argument('--log-file', type=str, metavar='FILE',
+                       help='Log file path')
+
+    # Output options
+    parser.add_argument('--quiet', action='store_true',
+                       help='Suppress console output')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Enable verbose output')
+
+    return parser
+
+
+def main() -> int:
+    """
+    Main entry point for the application.
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
+    parser = create_argument_parser()
     args = parser.parse_args()
-
-    # Set logging level
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    # Create example files if requested
-    if args.create_examples:
-        create_sample_credentials_file()
-        return
-
-    # Header
-    print("\n" + "=" * 70)
-    print("STUDENT DATABASE MANAGEMENT SYSTEM")
-    print("Minimal Setup and Connection Test")
-    print("=" * 70)
-
-    # Setup database
-    setup = DatabaseSetup(args.credentials)
+    from entity.creation_queries import get_schema_info
+    info = get_schema_info()
+    print(f"Total tables: {info['total_tables']}")
+    print(f"MySQL 5.7 compatible: {info['mysql57_compatibility']}")
 
     try:
-        # Test connection
-        print("\n🔧 Testing database connection...")
-        if not setup.test_connection():
-            print("\n❌ Failed to connect to database.")
-            print("Please check your credentials.json file.")
-            if not Path(args.credentials).exists():
-                print(f"\n'{args.credentials}' not found.")
-                print("Run with --create-examples to create sample files.")
-            sys.exit(1)
+        # Handle utility operations first
+        if args.create_credentials:
+            create_sample_credentials_file(args.credentials)
+            return 0
 
-        print("✅ Connection successful!")
+        if args.check_drivers:
+            drivers = check_driver_availability()
+            print("\n🔍 MySQL Driver Availability:")
+            print(f"   mysql-connector-python: {'✅ Available' if drivers['mysql-connector-python'] else '❌ Not available'}")
+            print(f"   PyMySQL: {'✅ Available' if drivers['pymysql'] else '❌ Not available'}")
 
-        # Initialize schema if requested
-        if args.init:
-            print("\n🔧 Initializing database schema...")
-            if setup.initialize_database(force=args.force):
-                print("✅ Schema initialized successfully!")
+            if not drivers['any_available']:
+                print("\n⚠️  No MySQL drivers installed!")
+                print("   Install one of the following:")
+                print("   pip install mysql-connector-python")
+                print("   pip install pymysql")
+                return 1
 
-                # Insert sample data if requested
-                if args.sample_data:
-                    print("\n🔧 Inserting sample data...")
-                    if setup.manager and setup.manager.insert_sample_data():
-                        print("✅ Sample data inserted successfully!")
-                    else:
-                        print("❌ Failed to insert sample data")
+            return 0
+
+        # Load configuration
+        config = load_config(args.config)
+
+        # Override config with command line arguments
+        if args.tables:
+            config._config_data.setdefault('tables', {})['selected_tables'] = args.tables
+            config._config_data['tables']['create_all'] = False
+
+        if args.exclude:
+            config._config_data.setdefault('tables', {})['exclude_tables'] = args.exclude
+
+        if args.drop:
+            config._config_data.setdefault('operations', {})['drop_existing'] = True
+
+        if args.log_level:
+            config._config_data.setdefault('logging', {})['level'] = args.log_level
+
+        if args.log_file:
+            config._config_data.setdefault('logging', {})['file'] = args.log_file
+
+        # Setup logging with updated config
+        setup_logging()
+
+        # Check if credentials file exists
+        if not Path(args.credentials).exists() and not args.test_connection:
+            logger.error(f"Credentials file not found: {args.credentials}")
+            print(f"❌ Credentials file not found: {args.credentials}")
+            print(f"💡 Run with --create-credentials to create a sample file")
+            return 1
+
+        # Initialize database manager
+        manager = DatabaseManager(config, args.credentials)
+
+        if not manager.initialize():
+            logger.error("Failed to initialize database manager")
+            print("❌ Failed to initialize database manager")
+            return 1
+
+        # Handle test connection
+        if args.test_connection:
+            print("🔌 Testing database connection...")
+            if manager.db_service.test_connection():
+                print("✅ Database connection successful")
+                conn_info = manager.db_service.get_connection_info()
+                print(f"   Host: {conn_info.get('host')}")
+                print(f"   Database: {conn_info.get('database')}")
+                print(f"   Driver: {conn_info.get('driver')}")
+                return 0
             else:
-                print("❌ Failed to initialize schema")
+                print("❌ Database connection failed")
+                return 1
 
-        # Display summary
-        setup.display_summary()
+        # Execute operations based on arguments
+        success = True
 
-        # Additional information
-        print("\n📝 Next Steps:")
-        if not setup.check_schema_exists():
-            print("   1. Run with --init to create database schema")
-            print("   2. Run with --init --sample-data to include test data")
+        # Schema creation
+        if args.init:
+            if not manager.create_schema(args.tables):
+                success = False
+
+        # Sample data insertion
+        if args.sample_data and success:
+            if not manager.insert_sample_data():
+                success = False
+
+        # Maintenance operations
+        if args.maintenance and success:
+            if not manager.run_maintenance_operations():
+                success = False
+
+        # Generate report
+        if args.report:
+            report = manager.generate_report()
+            if 'error' in report:
+                print(f"❌ Report generation failed: {report['error']}")
+                success = False
+            else:
+                # Save report to file
+                import json
+                report_file = f"database_report_{time.strftime('%Y%m%d_%H%M%S')}.json"
+                with open(report_file, 'w') as f:
+                    json.dump(report, f, indent=2, default=str)
+                print(f"📊 Database report saved to: {report_file}")
+
+        # Display status (default if no other operations)
+        if args.status or not any([args.init, args.sample_data, args.maintenance, args.report]):
+            manager.display_status()
+
+        # Show next steps if appropriate
+        if not any([args.init, args.sample_data, args.maintenance, args.report, args.status]):
+            print("\n💡 Next Steps:")
+            if not args.init:
+                print("   python main.py --init              # Create database schema")
+                print("   python main.py --init --sample-data # Create schema with sample data")
+            print("   python main.py --status            # Show database status")
+            print("   python main.py --report            # Generate comprehensive report")
+            print("   python main.py --maintenance       # Run maintenance operations")
+
+        # Cleanup
+        manager.close()
+
+        if success:
+            logger.info("All operations completed successfully")
+            return 0
         else:
-            print("   • Database is ready to use!")
-            print("   • Run student_db_manager.py for full demo")
-            print("   • Use --sample-data to add test data")
-
-        print("\n💡 Examples:")
-        print("   python main.py --init                    # Create schema")
-        print("   python main.py --init --sample-data      # Create with test data")
-        print("   python main.py --create-examples         # Create example files")
-        print("   python main.py --verbose                 # Show detailed logs")
+            logger.error("Some operations failed")
+            return 1
 
     except KeyboardInterrupt:
-        print("\n\n⚠️ Operation cancelled by user")
-        sys.exit(0)
+        print("\n⚠️ Operation cancelled by user")
+        logger.info("Operation cancelled by user")
+        return 1
+
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        print(f"\n❌ Error: {e}")
+        logger.exception("Unexpected error occurred")
+        print(f"❌ Unexpected error: {e}")
+        return 1
+
+
+def run_interactive_mode() -> int:
+    """
+    Run interactive mode for guided database operations.
+
+    Returns:
+        Exit code
+    """
+    try:
+        print("\n" + "=" * 60)
+        print("MySQL Student Database - Interactive Mode")
+        print("=" * 60)
+
+        # Check drivers first
+        drivers = check_driver_availability()
+        if not drivers['any_available']:
+            print("❌ No MySQL drivers installed!")
+            print("Install one with: pip install mysql-connector-python")
+            return 1
+
+        # Check for credentials
+        credentials_file = 'credentials.json'
+        if not Path(credentials_file).exists():
+            print(f"\n⚠️ Credentials file not found: {credentials_file}")
+            create_new = input("Create sample credentials file? (y/n): ").lower().strip()
+
+            if create_new == 'y':
+                create_sample_credentials_file(credentials_file)
+                print(f"✅ Sample credentials created: {credentials_file}")
+                print("Please update with your actual database credentials and run again.")
+                return 0
+            else:
+                return 1
+
+        # Load configuration
+        config = load_config()
+        setup_logging()
+
+        # Initialize manager
+        manager = DatabaseManager(config, credentials_file)
+
+        print("\n🔌 Connecting to database...")
+        if not manager.initialize():
+            print("❌ Failed to connect to database")
+            return 1
+
+        print("✅ Connected successfully!")
+
+        # Interactive menu
+        while True:
+            print("\n" + "-" * 40)
+            print("Available Operations:")
+            print("1. Create/Update Schema")
+            print("2. Insert Sample Data")
+            print("3. Run Maintenance")
+            print("4. Generate Report")
+            print("5. Show Status")
+            print("6. Test Connection")
+            print("0. Exit")
+            print("-" * 40)
+
+            choice = input("Select operation (0-6): ").strip()
+
+            if choice == '0':
+                break
+            elif choice == '1':
+                print("\n📋 Creating/Updating Schema...")
+                if manager.create_schema():
+                    print("✅ Schema operations completed")
+                else:
+                    print("❌ Schema operations failed")
+            elif choice == '2':
+                print("\n📊 Inserting Sample Data...")
+                if manager.insert_sample_data():
+                    print("✅ Sample data insertion completed")
+                else:
+                    print("❌ Sample data insertion failed")
+            elif choice == '3':
+                print("\n🔧 Running Maintenance...")
+                if manager.run_maintenance_operations():
+                    print("✅ Maintenance completed")
+                else:
+                    print("❌ Maintenance failed")
+            elif choice == '4':
+                print("\n📊 Generating Report...")
+                report = manager.generate_report()
+                if 'error' not in report:
+                    report_file = f"interactive_report_{time.strftime('%Y%m%d_%H%M%S')}.json"
+                    import json
+                    with open(report_file, 'w') as f:
+                        json.dump(report, f, indent=2, default=str)
+                    print(f"✅ Report saved to: {report_file}")
+                else:
+                    print("❌ Report generation failed")
+            elif choice == '5':
+                manager.display_status()
+            elif choice == '6':
+                if manager.db_service.test_connection():
+                    print("✅ Database connection is working")
+                else:
+                    print("❌ Database connection failed")
+            else:
+                print("❌ Invalid choice. Please select 0-6.")
+
+        manager.close()
+        print("\n👋 Goodbye!")
+        return 0
+
+    except KeyboardInterrupt:
+        print("\n⚠️ Operation cancelled")
+        return 1
+    except Exception as e:
+        print(f"❌ Error in interactive mode: {e}")
+        return 1
+
+
+def validate_environment() -> bool:
+    """
+    Validate the environment and dependencies.
+
+    Returns:
+        True if environment is valid
+    """
+    try:
+        # Check Python version
+        if sys.version_info < (3, 8):
+            print("❌ Python 3.8+ required")
+            return False
+
+        # Check for required directories
+        required_dirs = ['config', 'entity', 'services', 'utils', 'tests']
+        missing_dirs = []
+
+        for dir_name in required_dirs:
+            if not Path(dir_name).exists():
+                missing_dirs.append(dir_name)
+
+        if missing_dirs:
+            print(f"❌ Missing required directories: {missing_dirs}")
+            return False
+
+        # Check MySQL drivers
+        drivers = check_driver_availability()
+        if not drivers['any_available']:
+            print("⚠️  No MySQL drivers installed")
+            print("   Run: pip install mysql-connector-python")
+            return False
+
+        return True
+
+    except Exception as e:
+        print(f"❌ Environment validation failed: {e}")
+        return False
+
+
+def display_help() -> None:
+    """Display comprehensive help information."""
+    print("""
+MySQL Student Database Management System
+========================================
+
+This system provides comprehensive management of a MySQL-based student database
+with support for schema creation, data management, and maintenance operations.
+
+QUICK START:
+-----------
+1. Install dependencies: pip install -r requirements.txt
+2. Create credentials:    python main.py --create-credentials
+3. Edit credentials.json with your MySQL details
+4. Initialize database:   python main.py --init --sample-data
+
+USAGE MODES:
+-----------
+Interactive Mode (recommended for beginners):
+    python main.py
+
+Command Line Mode:
+    python main.py [options]
+
+COMMON OPERATIONS:
+-----------------
+# Create database schema
+python main.py --init
+
+# Create schema with sample data
+python main.py --init --sample-data
+
+# Create specific tables only
+python main.py --init --tables Students Teachers Courses
+
+# Drop existing tables and recreate
+python main.py --drop --init --sample-data
+
+# Check database status
+python main.py --status
+
+# Generate comprehensive report
+python main.py --report
+
+# Run maintenance operations
+python main.py --maintenance
+
+# Test database connection
+python main.py --test-connection
+
+CONFIGURATION:
+-------------
+The system can be configured via:
+- Environment variables (DB_HOST, DB_PORT, etc.)
+- Configuration files (JSON/YAML)
+- Command line arguments
+
+LOGGING:
+-------
+Logs are written to mysql_database.log by default
+Use --log-level to control verbosity (DEBUG, INFO, WARNING, ERROR)
+
+SECURITY:
+--------
+- Never commit credentials.json to version control
+- Use environment variables in production
+- Enable SSL for remote connections
+- Use dedicated database users with minimal privileges
+
+For detailed documentation, visit: https://github.com/your-repo/mysql-student-db
+""")
+
+
+def create_project_structure() -> bool:
+    """
+    Create the basic project structure if it doesn't exist.
+
+    Returns:
+        True if structure created successfully
+    """
+    try:
+        directories = [
+            'config', 'entity', 'services', 'utils', 'tests', 'logs'
+        ]
+
+        files_to_create = {
+            'config/__init__.py': '',
+            'entity/__init__.py': '',
+            'services/__init__.py': '',
+            'utils/__init__.py': '',
+            'tests/__init__.py': '',
+            '.env.example': '''# MySQL Database Configuration
+DB_HOST=localhost
+DB_PORT=3306
+DB_DATABASE=student_database
+DB_USERNAME=your_username
+DB_PASSWORD=your_password
+DB_CONNECTION_TIMEOUT=30
+
+# Operation Flags
+CREATE_SCHEMA=true
+INSERT_SAMPLE_DATA=false
+UPDATE_EXISTING=false
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=mysql_database.log
+''',
+            '.gitignore': '''# Credentials and sensitive files
+credentials.json
+credentials.yaml
+.env
+
+# Log files
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Reports
+*_report_*.json
+*_report_*.html
+'''
+        }
+
+        # Create directories
+        for directory in directories:
+            Path(directory).mkdir(exist_ok=True)
+
+        # Create files
+        for file_path, content in files_to_create.items():
+            path = Path(file_path)
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, 'w') as f:
+                    f.write(content)
+
+        print("✅ Project structure created successfully")
+        return True
+
+    except Exception as e:
+        print(f"❌ Failed to create project structure: {e}")
+        return False
+
+
+if __name__ == '__main__':
+    # Handle special cases first
+    if len(sys.argv) > 1:
+        if '--help' in sys.argv or '-h' in sys.argv:
+            display_help()
+            sys.exit(0)
+        elif '--setup-project' in sys.argv:
+            if create_project_structure():
+                print("Project structure created. You can now run the application.")
+            sys.exit(0)
+
+    # Validate environment
+    if not validate_environment():
+        print("\n💡 Try running: python main.py --setup-project")
         sys.exit(1)
 
+    # Run main application
+    try:
+        if len(sys.argv) == 1:
+            # No arguments - run interactive mode
+            exit_code = run_interactive_mode()
+        else:
+            # Command line arguments provided
+            exit_code = main()
 
-if __name__ == "__main__":
-    main()
+        sys.exit(exit_code)
+
+    except KeyboardInterrupt:
+        print("\n⚠️ Application interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
+        logging.exception("Fatal error occurred")
+        sys.exit(1)
