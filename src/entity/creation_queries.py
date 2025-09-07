@@ -181,6 +181,7 @@ CREATE_TABLE_QUERIES: Dict[str, str] = {
     'EvaluationComponents': """
         CREATE TABLE IF NOT EXISTS EvaluationComponents (
             ComponentID INT PRIMARY KEY AUTO_INCREMENT,
+            CourseID INT NOT NULL,
             GroupID INT NOT NULL,
             ComponentName VARCHAR(255) NOT NULL,
             ComponentCode VARCHAR(50),
@@ -192,24 +193,29 @@ CREATE_TABLE_QUERIES: Dict[str, str] = {
             IsActive TINYINT(1) DEFAULT 1,
             CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UpdatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            
+    
+            FOREIGN KEY (CourseID) REFERENCES Courses(CourseID)
+                ON DELETE CASCADE ON UPDATE CASCADE,
             FOREIGN KEY (GroupID) REFERENCES EvaluationGroups(GroupID)
                 ON DELETE CASCADE ON UPDATE CASCADE,
-            
+    
             UNIQUE KEY unique_component_code (GroupID, ComponentCode),
+            INDEX idx_course (CourseID),
             INDEX idx_group (GroupID),
             INDEX idx_component_code (ComponentCode),
             INDEX idx_order (OrderIndex),
             INDEX idx_due_date (DueDate),
-            INDEX idx_active (IsActive)
+            INDEX idx_active (IsActive),
+            INDEX idx_course_group (CourseID, GroupID)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        COMMENT='Individual evaluation components (e.g., Quiz 1, Assignment 2)'
+        COMMENT='Individual evaluation components with course context'
     """,
 
     'StudentScores': """
         CREATE TABLE IF NOT EXISTS StudentScores (
             ScoreID INT PRIMARY KEY AUTO_INCREMENT,
             StudentID INT NOT NULL,
+            CourseID INT NOT NULL,
             LevelID INT NULL,
             GroupID INT NULL,
             ComponentID INT NULL,
@@ -226,6 +232,8 @@ CREATE_TABLE_QUERIES: Dict[str, str] = {
             
             FOREIGN KEY (StudentID) REFERENCES Students(StudentID)
                 ON DELETE CASCADE ON UPDATE CASCADE,
+            FOREIGN KEY (CourseID) REFERENCES Courses(CourseID)
+                ON DELETE CASCADE ON UPDATE CASCADE,
             FOREIGN KEY (LevelID) REFERENCES Levels(LevelID)
                 ON DELETE CASCADE ON UPDATE CASCADE,
             FOREIGN KEY (GroupID) REFERENCES EvaluationGroups(GroupID)
@@ -236,17 +244,19 @@ CREATE_TABLE_QUERIES: Dict[str, str] = {
                 ON DELETE SET NULL ON UPDATE CASCADE,
             
             INDEX idx_student (StudentID),
+            INDEX idx_course (CourseID),
             INDEX idx_level (LevelID),
             INDEX idx_group (GroupID),
             INDEX idx_component (ComponentID),
             INDEX idx_recorded_by (RecordedBy),
             INDEX idx_date_completed (DateCompleted),
             INDEX idx_status (Status),
+            INDEX idx_student_course (StudentID, CourseID),
             INDEX idx_student_level (StudentID, LevelID),
             INDEX idx_student_group (StudentID, GroupID),
             INDEX idx_student_component (StudentID, ComponentID)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        COMMENT='Polymorphic scores table supporting Level, Group, and Component evaluations'
+        COMMENT='Polymorphic scores table supporting Level, Group, and Component evaluations with course context'
     """,
 
     'Grades': """
@@ -530,7 +540,7 @@ CREATE_VIEWS: Dict[str, str] = {
         FROM Courses c
         LEFT JOIN Levels l ON c.CourseID = l.CourseID
         LEFT JOIN EvaluationGroups eg ON l.LevelID = eg.LevelID
-        LEFT JOIN EvaluationComponents ec ON eg.GroupID = ec.GroupID
+        LEFT JOIN EvaluationComponents ec ON eg.GroupID = ec.GroupID AND c.CourseID = ec.CourseID
         WHERE (l.IsActive IS NULL OR l.IsActive = 1)
         AND (eg.IsActive IS NULL OR eg.IsActive = 1)
         AND (ec.IsActive IS NULL OR ec.IsActive = 1)

@@ -167,10 +167,11 @@ class CSVLoader:
 
             'EvaluationComponents': {
                 'required_columns': [
-                    'GroupID', 'ComponentName', 'Weight', 'MaxScore', 'OrderIndex'
+                    'CourseID', 'GroupID', 'ComponentName', 'Weight', 'MaxScore', 'OrderIndex'
                 ],
                 'optional_columns': ['ComponentCode', 'Description', 'DueDate', 'IsActive'],
                 'column_validators': {
+                    'CourseID': self._validate_integer,
                     'GroupID': self._validate_integer,
                     'Weight': self._validate_decimal,
                     'MaxScore': self._validate_decimal,
@@ -183,9 +184,9 @@ class CSVLoader:
                 },
                 'insert_query': """
                     INSERT INTO EvaluationComponents (
-                        GroupID, ComponentName, ComponentCode, Description, Weight, 
+                        CourseID, GroupID, ComponentName, ComponentCode, Description, Weight, 
                         MaxScore, OrderIndex, DueDate, IsActive
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 'check_duplicates': True,
                 'duplicate_check_columns': ['GroupID', 'ComponentCode'],
@@ -194,7 +195,7 @@ class CSVLoader:
 
             'StudentScores': {
                 'required_columns': [
-                    'StudentID', 'Score', 'MaxPossibleScore', 'Status'
+                    'StudentID', 'CourseID', 'Score', 'MaxPossibleScore', 'Status'
                 ],
                 'optional_columns': [
                     'LevelID', 'GroupID', 'ComponentID', 'DateCompleted',
@@ -202,6 +203,7 @@ class CSVLoader:
                 ],
                 'column_validators': {
                     'StudentID': self._validate_integer,
+                    'CourseID': self._validate_integer,
                     'LevelID': self._validate_optional_integer,
                     'GroupID': self._validate_optional_integer,
                     'ComponentID': self._validate_optional_integer,
@@ -216,9 +218,9 @@ class CSVLoader:
                 },
                 'insert_query': """
                     INSERT INTO StudentScores (
-                        StudentID, LevelID, GroupID, ComponentID, Score, MaxPossibleScore, 
+                        StudentID, CourseID, LevelID, GroupID, ComponentID, Score, MaxPossibleScore, 
                         DateCompleted, Status, Notes, Feedback, RecordedBy
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 'check_duplicates': False,
                 'custom_validation': self._validate_polymorphic_score
@@ -490,19 +492,30 @@ class CSVLoader:
                 )
             elif table_name == 'EvaluationComponents':
                 values = (
-                    transformed_row['GroupID'], transformed_row['ComponentName'],
-                    transformed_row.get('ComponentCode'), transformed_row.get('Description'),
-                    transformed_row['Weight'], transformed_row['MaxScore'],
-                    transformed_row['OrderIndex'], transformed_row.get('DueDate'),
+                    transformed_row['CourseID'],  # Add CourseID here
+                    transformed_row['GroupID'],
+                    transformed_row['ComponentName'],
+                    transformed_row.get('ComponentCode'),
+                    transformed_row.get('Description'),
+                    transformed_row['Weight'],
+                    transformed_row['MaxScore'],
+                    transformed_row['OrderIndex'],
+                    transformed_row.get('DueDate'),
                     transformed_row.get('IsActive', 1)
                 )
             elif table_name == 'StudentScores':
                 values = (
-                    transformed_row['StudentID'], transformed_row.get('LevelID'),
-                    transformed_row.get('GroupID'), transformed_row.get('ComponentID'),
-                    transformed_row['Score'], transformed_row['MaxPossibleScore'],
-                    transformed_row.get('DateCompleted'), transformed_row['Status'],
-                    transformed_row.get('Notes'), transformed_row.get('Feedback'),
+                    transformed_row['StudentID'],
+                    transformed_row['CourseID'],  # Add CourseID here
+                    transformed_row.get('LevelID'),
+                    transformed_row.get('GroupID'),
+                    transformed_row.get('ComponentID'),
+                    transformed_row['Score'],
+                    transformed_row['MaxPossibleScore'],
+                    transformed_row.get('DateCompleted'),
+                    transformed_row['Status'],
+                    transformed_row.get('Notes'),
+                    transformed_row.get('Feedback'),
                     transformed_row.get('RecordedBy')
                 )
             elif table_name == 'Teachers':
